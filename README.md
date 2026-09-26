@@ -9,6 +9,7 @@
 
 ## ディレクトリ構成
 
+```txt
 dev-tools/
 ├── README.md
 ├── LICENSE
@@ -18,3 +19,4 @@ dev-tools/
     └── git/
         ├── README.md
         └── cleanup-worktree.sh
+```
