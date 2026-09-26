@@ -79,13 +79,133 @@ require_cmd gh
 require_cmd realpath
 
 # ----------------------------------------------------------------------
-# Repository
+# Repository selection
 # ----------------------------------------------------------------------
 
-REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" \
-  || fail "not inside a Git repository"
+SEARCH_ROOT="$(pwd -P)"
+
+select_repository() {
+  local candidates
+  local selected
+
+  candidates="$(mktemp)"
+
+  declare -A seen=()
+
+  collect_repository() {
+    local candidate="$1"
+    local primary
+    local branch
+    local origin
+    local name
+
+    # Only treat directories with their own .git entry as repositories/worktrees.
+    [[ -e "$candidate/.git" ]] || return 0
+
+    # Resolve to the primary worktree.
+    primary="$(
+      git -C "$candidate" worktree list --porcelain 2>/dev/null \
+        | awk '
+            /^worktree / {
+              sub(/^worktree /, "")
+              print
+              exit
+            }
+          '
+    )"
+
+    [[ -n "$primary" ]] || return 0
+
+    primary="$(realpath -m "$primary")"
+
+    # Multiple linked worktrees can resolve to the same repository.
+    # Show the repository only once.
+    [[ -z "${seen[$primary]:-}" ]] || return 0
+    seen["$primary"]=1
+
+    name="$(basename "$primary")"
+
+    branch="$(
+      git -C "$primary" symbolic-ref \
+        --quiet \
+        --short \
+        HEAD \
+        2>/dev/null \
+        || printf '(detached)'
+    )"
+
+    origin="$(
+      git -C "$primary" remote get-url origin 2>/dev/null \
+        || printf '-'
+    )"
+
+    printf '%s\t%s\t%s\t%s\n' \
+      "$name" \
+      "$branch" \
+      "$primary" \
+      "$origin" \
+      >> "$candidates"
+  }
+
+  # Current directory itself.
+  collect_repository "$SEARCH_ROOT"
+
+  # Direct child directories.
+  while IFS= read -r -d '' dir; do
+    collect_repository "$dir"
+  done < <(
+    find "$SEARCH_ROOT" \
+      -mindepth 1 \
+      -maxdepth 1 \
+      -type d \
+      -print0
+  )
+
+  if [[ ! -s "$candidates" ]]; then
+    rm -f "$candidates"
+
+    fail "no Git repositories found in: $SEARCH_ROOT"
+  fi
+
+  if ! selected="$(
+    fzf \
+      --delimiter=$'\t' \
+      --with-nth=1,2,3 \
+      --header=$'NAME\tBRANCH\tPATH' \
+      --prompt='repository> ' \
+      --height='80%' \
+      --layout=reverse \
+      --border \
+      --no-multi \
+      < "$candidates"
+  )"; then
+    rm -f "$candidates"
+
+    printf 'Repository selection cancelled.\n'
+    exit 0
+  fi
+
+  rm -f "$candidates"
+
+  printf '%s\n' "$selected"
+}
+
+SELECTED_REPOSITORY="$(select_repository)"
+
+IFS=$'\t' read -r \
+  SELECTED_REPOSITORY_NAME \
+  SELECTED_REPOSITORY_BRANCH \
+  REPO_ROOT \
+  SELECTED_REPOSITORY_ORIGIN \
+  <<< "$SELECTED_REPOSITORY"
 
 REPO_ROOT="$(realpath -m "$REPO_ROOT")"
+
+printf '\nSelected repository\n\n'
+printf '  Name:   %s\n' "$SELECTED_REPOSITORY_NAME"
+printf '  Path:   %s\n' "$REPO_ROOT"
+printf '  Branch: %s\n' "$SELECTED_REPOSITORY_BRANCH"
+printf '  Origin: %s\n\n' "$SELECTED_REPOSITORY_ORIGIN"
 
 cd "$REPO_ROOT"
 
