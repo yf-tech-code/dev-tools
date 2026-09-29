@@ -10,7 +10,7 @@ set -Eeuo pipefail
 #   - an interactive TTY
 #   - explicit repository selection with fzf
 #   - explicit cleanup-target selection with fzf
-#   - merge verification
+#   - GitHub merge verification
 #   - explicit human confirmation
 #
 # It removes at most ONE cleanup target per execution.
@@ -24,8 +24,9 @@ Behavior:
   1. Search the current directory and its direct child directories for Git repositories.
   2. Select one repository with fzf.
   3. Select one cleanup target with fzf.
-  4. Re-validate the selected target.
-  5. Remove only the selected worktree / local branch if it is safe.
+  4. Retrieve the associated PR or Issue title when available.
+  5. Re-validate the selected target.
+  6. Remove only the selected worktree / local branch if it is safe.
 
 Cleanup target types:
   BOTH
@@ -39,12 +40,11 @@ Cleanup target types:
 
 Worktree states:
   CLEAN
-    No tracked changes, untracked files, or ignored files.
+    No tracked changes, normal untracked files, or ignored files.
 
   IGNORED_ONLY
     No tracked changes or normal untracked files.
     Only ignored files such as node_modules, .next, coverage, etc. exist.
-    These files can be removed after explicit confirmation.
 
   DIRTY
     Tracked changes or non-ignored untracked files exist.
@@ -129,6 +129,20 @@ require_cmd gh
 require_cmd realpath
 require_cmd find
 require_cmd awk
+require_cmd sed
+require_cmd tput
+
+# ----------------------------------------------------------------------
+# Terminal colors
+# ----------------------------------------------------------------------
+
+COLOR_RESET="$(tput sgr0)"
+COLOR_BOLD="$(tput bold)"
+COLOR_DIM="$(tput dim)"
+COLOR_CYAN="$(tput setaf 6)"
+COLOR_GREEN="$(tput setaf 2)"
+COLOR_YELLOW="$(tput setaf 3)"
+COLOR_RED="$(tput setaf 1)"
 
 SEARCH_ROOT="$(pwd -P)"
 
@@ -198,10 +212,8 @@ select_repository() {
       >> "$candidates"
   }
 
-  # Current directory itself.
   collect_repository "$SEARCH_ROOT"
 
-  # Direct child directories only.
   while IFS= read -r -d '' dir; do
     collect_repository "$dir"
   done < <(
@@ -360,7 +372,6 @@ load_worktrees
 [[ -n "$PRIMARY_PATH" ]] \
   || fail "unable to determine primary worktree"
 
-# Repository selection normalizes to the primary worktree, so this should hold.
 [[ "$REPO_ROOT" == "$PRIMARY_PATH" ]] \
   || fail "selected repository is not the primary worktree: $PRIMARY_PATH"
 
@@ -444,12 +455,11 @@ local_merge_label_for_sha() {
     fi
   fi
 
-  # Could still be squash-merged. Exact verification happens after selection.
   printf 'CHECK'
 }
 
 # ----------------------------------------------------------------------
-# Worktree safety (local only)
+# Worktree safety
 # ----------------------------------------------------------------------
 
 worktree_status() {
@@ -473,7 +483,6 @@ worktree_status() {
   local status
   local ignored
 
-  # Tracked changes and non-ignored untracked files.
   if ! status="$(
     git -C "$path" \
       status \
@@ -490,17 +499,6 @@ worktree_status() {
     return
   fi
 
-  # Ignored files are distinguished from normal dirtiness.
-  #
-  # Typical Codex/Node.js worktrees contain:
-  #   node_modules/
-  #   .next/
-  #   coverage/
-  #   playwright-report/
-  #   test-results/
-  #
-  # However ignored files may also contain valuable local data such as .env,
-  # so they must be explicitly confirmed before deletion.
   if ! ignored="$(
     git -C "$path" \
       ls-files \
@@ -523,10 +521,9 @@ worktree_status() {
 
 show_ignored_cleanup_preview() {
   local path="$1"
+  local preview
 
   printf '\nIgnored files/directories that Git would remove:\n\n'
-
-  local preview
 
   if ! preview="$(
     git -C "$path" \
@@ -542,8 +539,6 @@ show_ignored_cleanup_preview() {
     return
   fi
 
-  # git clean -n collapses large ignored directories such as node_modules/,
-  # so this stays substantially shorter than printing every ignored file.
   while IFS= read -r line; do
     printf '  %s\n' "$line"
   done <<< "$preview"
@@ -551,13 +546,6 @@ show_ignored_cleanup_preview() {
 
 # ----------------------------------------------------------------------
 # Candidate generation
-#
-# Local only:
-#   - git refs
-#   - git worktree list
-#   - existing origin/<default> ref when available
-#
-# GitHub API / fetch are intentionally deferred until AFTER fzf selection.
 # ----------------------------------------------------------------------
 
 TMP_CANDIDATES="$(mktemp)"
@@ -565,7 +553,6 @@ trap 'rm -f "$TMP_CANDIDATES"' EXIT
 
 declare -A SEEN_BRANCH=()
 
-# First: registered linked worktrees.
 for path in "${WT_PATHS[@]}"; do
   [[ "$path" == "$PRIMARY_PATH" ]] && continue
 
@@ -574,8 +561,9 @@ for path in "${WT_PATHS[@]}"; do
 
   [[ -n "$head" ]] || continue
 
-  # Never offer the detected default branch.
-  if [[ -n "$DEFAULT_BRANCH" && -n "$branch" && "$branch" == "$DEFAULT_BRANCH" ]]; then
+  if [[ -n "$DEFAULT_BRANCH" \
+        && -n "$branch" \
+        && "$branch" == "$DEFAULT_BRANCH" ]]; then
     continue
   fi
 
@@ -617,11 +605,11 @@ for path in "${WT_PATHS[@]}"; do
   fi
 done
 
-# Second: local branches without worktrees.
 while IFS=$'\t' read -r branch sha; do
   [[ -n "$branch" ]] || continue
 
-  if [[ -n "$DEFAULT_BRANCH" && "$branch" == "$DEFAULT_BRANCH" ]]; then
+  if [[ -n "$DEFAULT_BRANCH" \
+        && "$branch" == "$DEFAULT_BRANCH" ]]; then
     continue
   fi
 
@@ -685,7 +673,7 @@ IFS=$'\t' read -r \
   <<< "$SELECTED"
 
 # ----------------------------------------------------------------------
-# Only now do remote/network work.
+# Remote state
 # ----------------------------------------------------------------------
 
 printf '\nSelected cleanup candidate\n\n'
@@ -731,13 +719,129 @@ git fetch \
   || fail "failed to fetch origin/$DEFAULT_BRANCH"
 
 # ----------------------------------------------------------------------
+# GitHub PR / Issue context
+# ----------------------------------------------------------------------
+
+CONTEXT_TYPE=""
+CONTEXT_NUMBER=""
+CONTEXT_TITLE=""
+CONTEXT_STATE=""
+CONTEXT_URL=""
+
+load_github_context() {
+  local branch="$1"
+  local sha="$2"
+
+  local result=""
+  local issue_number=""
+
+  CONTEXT_TYPE=""
+  CONTEXT_NUMBER=""
+  CONTEXT_TITLE=""
+  CONTEXT_STATE=""
+  CONTEXT_URL=""
+
+  [[ -n "$branch" ]] || return 0
+  [[ "$branch" != "(detached)" ]] || return 0
+
+  # Prefer a PR whose head SHA exactly matches the selected target.
+  result="$(
+    gh pr list \
+      --head "$branch" \
+      --state all \
+      --limit 100 \
+      --json number,title,state,url,mergedAt,headRefOid \
+      --jq \
+      ".[] |
+       select(.headRefOid == \"$sha\") |
+       [
+         .number,
+         .title,
+         (if .mergedAt != null then \"MERGED\" else .state end),
+         .url
+       ] |
+       @tsv" \
+      2>/dev/null \
+      | head -n 1 \
+      || true
+  )"
+
+  # If the branch has moved since the PR was created, still show the most
+  # recent PR for context. This is display-only; merge verification below
+  # still requires exact evidence.
+  if [[ -z "$result" ]]; then
+    result="$(
+      gh pr list \
+        --head "$branch" \
+        --state all \
+        --limit 1 \
+        --json number,title,state,url,mergedAt \
+        --jq \
+        '.[] |
+         [
+           .number,
+           .title,
+           (if .mergedAt != null then "MERGED" else .state end),
+           .url
+         ] |
+         @tsv' \
+        2>/dev/null \
+        | head -n 1 \
+        || true
+    )"
+  fi
+
+  if [[ -n "$result" ]]; then
+    IFS=$'\t' read -r \
+      CONTEXT_NUMBER \
+      CONTEXT_TITLE \
+      CONTEXT_STATE \
+      CONTEXT_URL \
+      <<< "$result"
+
+    CONTEXT_TYPE="PR"
+    return 0
+  fi
+
+  # If no PR is associated with the branch, try the trailing number
+  # as an Issue number.
+  #
+  # Example:
+  #   ai/fix-workflow-expression-501 -> Issue #501
+  if [[ "$branch" =~ ([0-9]+)$ ]]; then
+    issue_number="${BASH_REMATCH[1]}"
+  else
+    return 0
+  fi
+
+  result="$(
+    gh issue view "$issue_number" \
+      --json number,title,state,url \
+      --jq '[.number, .title, .state, .url] | @tsv' \
+      2>/dev/null \
+      || true
+  )"
+
+  [[ -n "$result" ]] || return 0
+
+  IFS=$'\t' read -r \
+    CONTEXT_NUMBER \
+    CONTEXT_TITLE \
+    CONTEXT_STATE \
+    CONTEXT_URL \
+    <<< "$result"
+
+  CONTEXT_TYPE="Issue"
+}
+
+load_github_context \
+  "$SELECTED_BRANCH_DISPLAY" \
+  "$SELECTED_HEAD"
+
+# ----------------------------------------------------------------------
 # Exact GitHub merge verification
 # ----------------------------------------------------------------------
 
-# Return:
-#   0 = exact merged PR found
-#   1 = not found
-#   2 = query failed
 find_exact_merged_pr_for_branch() {
   local branch="$1"
   local sha="$2"
@@ -772,12 +876,6 @@ find_exact_merged_pr_for_branch() {
   return 1
 }
 
-# Used for detached / branchless worktrees.
-#
-# Return:
-#   0 = exact HEAD belongs to a merged PR into the default branch
-#   1 = not found
-#   2 = query failed
 find_exact_merged_pr_for_commit() {
   local sha="$1"
 
@@ -803,7 +901,8 @@ find_exact_merged_pr_for_commit() {
   while IFS=$'\t' read -r number base head url; do
     [[ -n "$number" ]] || continue
 
-    if [[ "$base" == "$DEFAULT_BRANCH" && "$head" == "$sha" ]]; then
+    if [[ "$base" == "$DEFAULT_BRANCH" \
+          && "$head" == "$sha" ]]; then
       printf '%s\t%s\n' "$number" "$url"
       return 0
     fi
@@ -923,6 +1022,7 @@ SELECTED_WORKTREE_BRANCH=""
 
 if (( SELECTED_HAD_WORKTREE )) \
   && [[ "$SELECTED_BRANCH_DISPLAY" != "(detached)" ]]; then
+
   SELECTED_WORKTREE_BRANCH="$SELECTED_BRANCH_DISPLAY"
 fi
 
@@ -957,8 +1057,6 @@ if [[ "$SELECTED_PATH" != "-" ]]; then
   done
 fi
 
-# A resource may disappear between fzf and confirmation. That is OK.
-# But an existing resource must not silently change identity.
 if (( CURRENT_BRANCH_EXISTS )) \
   && [[ "$CURRENT_BRANCH_SHA" != "$SELECTED_HEAD" ]]; then
 
@@ -977,11 +1075,11 @@ if (( CURRENT_WORKTREE_EXISTS )) \
   fail "selected worktree branch identity changed after selection; run the script again"
 fi
 
-# A BRANCH_ONLY target must not suddenly gain a worktree.
 if (( ! SELECTED_HAD_WORKTREE && CURRENT_BRANCH_EXISTS )); then
   new_path="${PATH_BY_BRANCH[$SELECTED_BRANCH]:-}"
 
-  if [[ -n "$new_path" && "$new_path" != "$PRIMARY_PATH" ]]; then
+  if [[ -n "$new_path" \
+        && "$new_path" != "$PRIMARY_PATH" ]]; then
     fail "selected branch gained a worktree after selection; run the script again"
   fi
 fi
@@ -1012,7 +1110,8 @@ fi
 CURRENT_PWD="$(pwd -P)"
 
 if (( CURRENT_WORKTREE_EXISTS )) \
-  && [[ "$CURRENT_PWD" == "$SELECTED_PATH" || "$CURRENT_PWD" == "$SELECTED_PATH/"* ]]; then
+  && [[ "$CURRENT_PWD" == "$SELECTED_PATH" \
+        || "$CURRENT_PWD" == "$SELECTED_PATH/"* ]]; then
 
   fail "selected worktree is the current working directory"
 fi
@@ -1033,7 +1132,6 @@ if (( CURRENT_WORKTREE_EXISTS )); then
       ;;
 
     IGNORED_ONLY)
-      # Allowed, but explicit confirmation is required below.
       ;;
 
     DIRTY)
@@ -1096,9 +1194,93 @@ fi
 # Plan
 # ----------------------------------------------------------------------
 
-printf '\nSelected cleanup target\n\n'
+printf '\n%sSelected cleanup target%s\n\n' \
+  "$COLOR_BOLD" \
+  "$COLOR_RESET"
+
 printf '  Repository:     %s\n' "$REPO_ROOT"
 printf '  Branch:         %s\n' "${SELECTED_BRANCH:-'(none)'}"
+
+# Highlight PR context.
+if [[ "$CONTEXT_TYPE" == "PR" ]]; then
+  printf '\n'
+
+  printf '  %s%sPR:             #%s %s%s\n' \
+    "$COLOR_BOLD" \
+    "$COLOR_CYAN" \
+    "$CONTEXT_NUMBER" \
+    "$CONTEXT_TITLE" \
+    "$COLOR_RESET"
+
+  case "$CONTEXT_STATE" in
+    MERGED)
+      STATE_COLOR="$COLOR_GREEN"
+      ;;
+
+    OPEN)
+      STATE_COLOR="$COLOR_YELLOW"
+      ;;
+
+    CLOSED)
+      STATE_COLOR="$COLOR_RED"
+      ;;
+
+    *)
+      STATE_COLOR="$COLOR_RESET"
+      ;;
+  esac
+
+  printf '  PR state:       %s%s%s\n' \
+    "$STATE_COLOR" \
+    "$CONTEXT_STATE" \
+    "$COLOR_RESET"
+
+  printf '  %sPR URL:         %s%s\n' \
+    "$COLOR_DIM" \
+    "$CONTEXT_URL" \
+    "$COLOR_RESET"
+
+  printf '\n'
+
+elif [[ "$CONTEXT_TYPE" == "Issue" ]]; then
+  printf '\n'
+
+  printf '  %s%sIssue:          #%s %s%s\n' \
+    "$COLOR_BOLD" \
+    "$COLOR_CYAN" \
+    "$CONTEXT_NUMBER" \
+    "$CONTEXT_TITLE" \
+    "$COLOR_RESET"
+
+  case "$CONTEXT_STATE" in
+    OPEN)
+      STATE_COLOR="$COLOR_YELLOW"
+      ;;
+
+    CLOSED)
+      STATE_COLOR="$COLOR_GREEN"
+      ;;
+
+    *)
+      STATE_COLOR="$COLOR_RESET"
+      ;;
+  esac
+
+  printf '  Issue state:    %s%s%s\n' \
+    "$STATE_COLOR" \
+    "$CONTEXT_STATE" \
+    "$COLOR_RESET"
+
+  printf '  %sIssue URL:      %s%s\n' \
+    "$COLOR_DIM" \
+    "$CONTEXT_URL" \
+    "$COLOR_RESET"
+
+  printf '\n'
+
+else
+  printf '  GitHub context: (not found)\n'
+fi
 
 if (( CURRENT_WORKTREE_EXISTS )); then
   printf '  Worktree:       %s\n' "$SELECTED_PATH"
@@ -1106,8 +1288,27 @@ else
   printf '  Worktree:       (none)\n'
 fi
 
-printf '  Worktree state: %s\n' "$CURRENT_STATUS"
-printf '  HEAD:           %s\n' "${CURRENT_BRANCH_SHA:-$CURRENT_WORKTREE_HEAD}"
+case "$CURRENT_STATUS" in
+  CLEAN)
+    STATUS_COLOR="$COLOR_GREEN"
+    ;;
+
+  IGNORED_ONLY)
+    STATUS_COLOR="$COLOR_YELLOW"
+    ;;
+
+  *)
+    STATUS_COLOR="$COLOR_RESET"
+    ;;
+esac
+
+printf '  Worktree state: %s%s%s\n' \
+  "$STATUS_COLOR" \
+  "$CURRENT_STATUS" \
+  "$COLOR_RESET"
+
+printf '  HEAD:           %s\n' \
+  "${CURRENT_BRANCH_SHA:-$CURRENT_WORKTREE_HEAD}"
 
 if [[ "$MERGE_PROOF" == "github-pr" ]]; then
   printf '  Merge proof:    PR #%s -> %s\n' \
@@ -1121,20 +1322,31 @@ else
     "$DEFAULT_BRANCH"
 fi
 
+# ----------------------------------------------------------------------
+# Ignored files preview
+# ----------------------------------------------------------------------
+
 if [[ "$CURRENT_STATUS" == "IGNORED_ONLY" ]]; then
   show_ignored_cleanup_preview "$SELECTED_PATH"
 
-  printf '\nWARNING:\n'
+  printf '\n%sWARNING:%s\n' \
+    "$COLOR_YELLOW" \
+    "$COLOR_RESET"
+
   printf '  The worktree contains ignored files.\n'
   printf '  This can include generated files such as node_modules/.next,\n'
   printf '  but can also include local files such as .env.\n'
   printf '  Review the list above carefully.\n'
 fi
 
+# ----------------------------------------------------------------------
+# Planned actions
+# ----------------------------------------------------------------------
+
 printf '\nPlanned actions:\n'
 
 if [[ "$CURRENT_STATUS" == "IGNORED_ONLY" ]]; then
-  printf '  - remove ignored files from worktree with: git clean -fdX\n'
+  printf '  - remove ignored files with: git clean -fdX\n'
 fi
 
 if (( CURRENT_WORKTREE_EXISTS )); then
@@ -1238,13 +1450,12 @@ if (( CURRENT_WORKTREE_EXISTS )) \
 
   # -f: required by git clean
   # -d: include ignored directories such as node_modules/
-  # -X: remove ONLY ignored files; do not touch normal untracked files
+  # -X: remove ONLY ignored files
   git -C "$SELECTED_PATH" \
     clean \
     -fdX \
     || fail "failed to remove ignored files; worktree was not removed"
 
-  # After removing ignored files the worktree must now be genuinely clean.
   load_worktrees
 
   [[ "$(worktree_status "$SELECTED_PATH")" == "CLEAN" ]] \
@@ -1258,8 +1469,6 @@ fi
 if (( CURRENT_WORKTREE_EXISTS )); then
   printf 'Removing worktree...\n'
 
-  # No --force.
-  # The worktree must already be clean at this point.
   git worktree remove "$SELECTED_PATH" \
     || fail "git worktree remove failed; branch was not deleted"
 fi
@@ -1277,8 +1486,8 @@ if (( CURRENT_BRANCH_EXISTS )); then
     "$SELECTED_BRANCH" \
     >/dev/null 2>&1; then
 
-    # Squash-merged branches can be rejected by `git branch -d`.
-    # Delete only the exact ref/SHA already verified as merged above.
+    # Squash-merged branches can be rejected by git branch -d.
+    # Delete only the exact ref/SHA already verified above.
 
     load_worktrees
 
@@ -1301,5 +1510,8 @@ if (( CURRENT_BRANCH_EXISTS )); then
   fi
 fi
 
-printf '\nCleanup completed.\n'
+printf '\n%sCleanup completed.%s\n' \
+  "$COLOR_GREEN" \
+  "$COLOR_RESET"
+
 printf 'Other worktrees and branches were not modified.\n'
