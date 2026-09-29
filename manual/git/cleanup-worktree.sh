@@ -54,7 +54,7 @@ Safety:
   - tracked changes are never removed
   - non-ignored untracked files are never removed
   - ignored files are shown before deletion
-  - ignored files require explicit "cleanup-ignored" confirmation
+  - ignored files require explicit confirmation
   - unmerged branches/commits are never removed
   - the primary worktree/default branch are never removed
   - no --force worktree removal
@@ -96,6 +96,24 @@ fail() {
 require_cmd() {
   command -v "$1" >/dev/null 2>&1 \
     || fail "required command not found: $1"
+}
+
+confirm() {
+  local message="$1"
+  local answer
+
+  printf '\n%s [y/N]: ' "$message"
+  IFS= read -r answer
+
+  case "$answer" in
+    y|Y)
+      return 0
+      ;;
+    *)
+      printf 'Cleanup cancelled.\n'
+      exit 0
+      ;;
+  esac
 }
 
 # ----------------------------------------------------------------------
@@ -1139,23 +1157,9 @@ fi
 # ----------------------------------------------------------------------
 
 if [[ "$CURRENT_STATUS" == "IGNORED_ONLY" ]]; then
-  printf '\nType "cleanup-ignored" to delete the ignored files and continue: '
-
-  IFS= read -r CONFIRMATION
-
-  if [[ "$CONFIRMATION" != "cleanup-ignored" ]]; then
-    printf 'Cleanup cancelled.\n'
-    exit 0
-  fi
+  confirm "Ignored files will be deleted. Continue?"
 else
-  printf '\nType "cleanup" to continue: '
-
-  IFS= read -r CONFIRMATION
-
-  if [[ "$CONFIRMATION" != "cleanup" ]]; then
-    printf 'Cleanup cancelled.\n'
-    exit 0
-  fi
+  confirm "Continue cleanup?"
 fi
 
 # ----------------------------------------------------------------------
