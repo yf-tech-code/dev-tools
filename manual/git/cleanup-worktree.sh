@@ -37,8 +37,24 @@ Cleanup target types:
   WORKTREE_ONLY
     linked/detached worktree only
 
+Worktree states:
+  CLEAN
+    No tracked changes, untracked files, or ignored files.
+
+  IGNORED_ONLY
+    No tracked changes or normal untracked files.
+    Only ignored files such as node_modules, .next, coverage, etc. exist.
+    These files can be removed after explicit confirmation.
+
+  DIRTY
+    Tracked changes or non-ignored untracked files exist.
+    Cleanup is refused.
+
 Safety:
-  - dirty worktrees are never removed
+  - tracked changes are never removed
+  - non-ignored untracked files are never removed
+  - ignored files are shown before deletion
+  - ignored files require explicit "cleanup-ignored" confirmation
   - unmerged branches/commits are never removed
   - the primary worktree/default branch are never removed
   - no --force worktree removal
@@ -332,11 +348,6 @@ load_worktrees
 
 # ----------------------------------------------------------------------
 # Local default-branch detection
-#
-# IMPORTANT:
-# Candidate generation must be fast and local-only.
-# No gh API calls and no git fetch are performed before the cleanup target
-# has been selected.
 # ----------------------------------------------------------------------
 
 detect_local_default_branch() {
@@ -444,6 +455,7 @@ worktree_status() {
   local status
   local ignored
 
+  # Tracked changes and non-ignored untracked files.
   if ! status="$(
     git -C "$path" \
       status \
@@ -460,8 +472,17 @@ worktree_status() {
     return
   fi
 
-  # git worktree remove may remove ignored files.
-  # Treat ignored local files as data that must not be deleted automatically.
+  # Ignored files are distinguished from normal dirtiness.
+  #
+  # Typical Codex/Node.js worktrees contain:
+  #   node_modules/
+  #   .next/
+  #   coverage/
+  #   playwright-report/
+  #   test-results/
+  #
+  # However ignored files may also contain valuable local data such as .env,
+  # so they must be explicitly confirmed before deletion.
   if ! ignored="$(
     git -C "$path" \
       ls-files \
@@ -475,11 +496,39 @@ worktree_status() {
   fi
 
   if [[ -n "$ignored" ]]; then
-    printf 'DIRTY'
+    printf 'IGNORED_ONLY'
     return
   fi
 
   printf 'CLEAN'
+}
+
+show_ignored_cleanup_preview() {
+  local path="$1"
+
+  printf '\nIgnored files/directories that Git would remove:\n\n'
+
+  local preview
+
+  if ! preview="$(
+    git -C "$path" \
+      clean \
+      -ndX \
+      2>/dev/null
+  )"; then
+    fail "unable to preview ignored-file cleanup"
+  fi
+
+  if [[ -z "$preview" ]]; then
+    printf '  (none)\n'
+    return
+  fi
+
+  # git clean -n collapses large ignored directories such as node_modules/,
+  # so this stays substantially shorter than printing every ignored file.
+  while IFS= read -r line; do
+    printf '  %s\n' "$line"
+  done <<< "$preview"
 }
 
 # ----------------------------------------------------------------------
@@ -965,8 +1014,12 @@ if (( CURRENT_WORKTREE_EXISTS )); then
     CLEAN)
       ;;
 
+    IGNORED_ONLY)
+      # Allowed, but explicit confirmation is required below.
+      ;;
+
     DIRTY)
-      fail "selected worktree contains tracked, untracked, or ignored local files"
+      fail "selected worktree contains tracked changes or non-ignored untracked files"
       ;;
 
     STALE)
@@ -1050,7 +1103,21 @@ else
     "$DEFAULT_BRANCH"
 fi
 
+if [[ "$CURRENT_STATUS" == "IGNORED_ONLY" ]]; then
+  show_ignored_cleanup_preview "$SELECTED_PATH"
+
+  printf '\nWARNING:\n'
+  printf '  The worktree contains ignored files.\n'
+  printf '  This can include generated files such as node_modules/.next,\n'
+  printf '  but can also include local files such as .env.\n'
+  printf '  Review the list above carefully.\n'
+fi
+
 printf '\nPlanned actions:\n'
+
+if [[ "$CURRENT_STATUS" == "IGNORED_ONLY" ]]; then
+  printf '  - remove ignored files from worktree with: git clean -fdX\n'
+fi
 
 if (( CURRENT_WORKTREE_EXISTS )); then
   printf '  - remove worktree: %s\n' "$SELECTED_PATH"
@@ -1071,13 +1138,24 @@ fi
 # Human confirmation
 # ----------------------------------------------------------------------
 
-printf '\nType "cleanup" to continue: '
+if [[ "$CURRENT_STATUS" == "IGNORED_ONLY" ]]; then
+  printf '\nType "cleanup-ignored" to delete the ignored files and continue: '
 
-IFS= read -r CONFIRMATION
+  IFS= read -r CONFIRMATION
 
-if [[ "$CONFIRMATION" != "cleanup" ]]; then
-  printf 'Cleanup cancelled.\n'
-  exit 0
+  if [[ "$CONFIRMATION" != "cleanup-ignored" ]]; then
+    printf 'Cleanup cancelled.\n'
+    exit 0
+  fi
+else
+  printf '\nType "cleanup" to continue: '
+
+  IFS= read -r CONFIRMATION
+
+  if [[ "$CONFIRMATION" != "cleanup" ]]; then
+    printf 'Cleanup cancelled.\n'
+    exit 0
+  fi
 fi
 
 # ----------------------------------------------------------------------
@@ -1092,8 +1170,23 @@ if (( CURRENT_WORKTREE_EXISTS )); then
   [[ "$latest_registered_head" == "$CURRENT_WORKTREE_HEAD" ]] \
     || fail "worktree HEAD changed before deletion; cleanup aborted"
 
-  [[ "$(worktree_status "$SELECTED_PATH")" == "CLEAN" ]] \
-    || fail "worktree state changed before deletion; cleanup aborted"
+  latest_status="$(worktree_status "$SELECTED_PATH")"
+
+  case "$CURRENT_STATUS" in
+    CLEAN)
+      [[ "$latest_status" == "CLEAN" ]] \
+        || fail "worktree state changed before deletion; cleanup aborted"
+      ;;
+
+    IGNORED_ONLY)
+      [[ "$latest_status" == "IGNORED_ONLY" ]] \
+        || fail "worktree state changed before deletion; cleanup aborted"
+      ;;
+
+    *)
+      fail "unexpected worktree status before deletion: $CURRENT_STATUS"
+      ;;
+  esac
 
   latest_fs_head="$(
     git -C "$SELECTED_PATH" \
@@ -1131,12 +1224,38 @@ else
 fi
 
 # ----------------------------------------------------------------------
+# Remove ignored files
+# ----------------------------------------------------------------------
+
+if (( CURRENT_WORKTREE_EXISTS )) \
+  && [[ "$CURRENT_STATUS" == "IGNORED_ONLY" ]]; then
+
+  printf 'Removing ignored files from worktree...\n'
+
+  # -f: required by git clean
+  # -d: include ignored directories such as node_modules/
+  # -X: remove ONLY ignored files; do not touch normal untracked files
+  git -C "$SELECTED_PATH" \
+    clean \
+    -fdX \
+    || fail "failed to remove ignored files; worktree was not removed"
+
+  # After removing ignored files the worktree must now be genuinely clean.
+  load_worktrees
+
+  [[ "$(worktree_status "$SELECTED_PATH")" == "CLEAN" ]] \
+    || fail "worktree is not clean after removing ignored files; cleanup aborted"
+fi
+
+# ----------------------------------------------------------------------
 # Remove worktree
 # ----------------------------------------------------------------------
 
 if (( CURRENT_WORKTREE_EXISTS )); then
   printf 'Removing worktree...\n'
 
+  # No --force.
+  # The worktree must already be clean at this point.
   git worktree remove "$SELECTED_PATH" \
     || fail "git worktree remove failed; branch was not deleted"
 fi
