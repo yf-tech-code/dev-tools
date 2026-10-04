@@ -1,4 +1,0 @@
-[cleanup_worktree]
-# Root directory that contains the Git repositories to scan.
-# The configured directory itself and its direct child directories are checked.
-root_directory = "~/work"
