@@ -997,7 +997,8 @@ def _current_target_state(
             _worktree_status(selected_worktree)
             if selected_worktree
             else None
-        ),    )
+        ),
+    )
 
 
 def _validate_selected_identity(
