@@ -18,7 +18,7 @@
 - `gh auth login` 済みのGitHub認証
 
 Python 3.11 以上を要求するのは、設定ファイルの読み込みに標準ライブラリの
-`tomllib` を使用するためです。
+`tomllib` を使用するためです。Pythonのサードパーティライブラリは不要です。
 
 ## ディレクトリ構成
 
@@ -28,12 +28,9 @@ dev-tools/
 ├── LICENSE
 └── manual/
     └── git/
-        ├── cleanup-worktree.sh
         ├── cleanup_worktree.py
         └── cleanup_worktree.example.toml
 ```
-
-`cleanup-worktree.sh` はPython版への移行完了後に削除予定です。
 
 ## cleanup_worktree.py
 
