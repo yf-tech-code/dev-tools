@@ -20,7 +20,10 @@ Python 3.11 以上を要求するのは、設定ファイルの読み込みに�
 cleanup_worktree/
 ├── README.md
 ├── cleanup_worktree.py
-└── cleanup_worktree.example.toml
+├── cleanup_worktree_support.py
+├── cleanup_worktree.example.toml
+└── tests/
+    └── test_cleanup_worktree.py
 ```
 
 ## 動作
@@ -31,7 +34,7 @@ cleanup_worktree/
 3. 前回選択したリポジトリを次回の候補一覧の先頭に表示する
 4. fzfで削除対象のbranch / worktreeを選択する
 5. GitHubとローカルGitの状態を使ってマージ済みであることを確認する
-6. 削除内容を表示し、人間の明示的な確認後に削除する
+6. 削除内容を表示し、`[Y/n]` で確認後に削除する（Enter のみでも承認）
 7. 削除完了後は終了せず、候補一覧を再取得して削除対象の選択画面に戻る
 8. fzfをキャンセルするとツールを終了する
 
@@ -112,7 +115,12 @@ python3 manual/git/cleanup_worktree/cleanup_worktree.py --dry-run
 - マージ済みであることを安全に確認できないbranch / commit
 
 ignored filesのみが残っているworktreeは、削除対象を事前表示し、
-追加の確認後に `git clean -fdX` でignored filesだけを削除します。
+確認後に `git clean -fdX` でignored filesだけを削除します。
+
+削除確認プロンプトは `[Y/n]` です。**Enter または `y` / `Y` で削除を承認**し、
+`n` / `N` やその他の入力、入力終了（EOF）でキャンセルします。
+**ignored files に `.env` などが含まれる場合も Enter で承認される**ため、
+表示された削除内容を確認してから Enter を押してください。
 
 以下の強制操作は使用しません。
 
@@ -126,8 +134,18 @@ ignored filesのみが残っているworktreeは、削除対象を事前表示�
 外部コマンドはPythonの `subprocess` に引数配列として渡し、
 `shell=True` は使用しません。
 
+## テスト
+
+```bash
+python3 -m unittest discover \
+  -s manual/git/cleanup_worktree/tests -p 'test_*.py' -v
+```
+
+GitHub認証なしで実行できる標準ライブラリのユニットテストです。
+
 ## Pythonコードスタイル
 
-Google Python Style Guideを参考にします。
+Google Python Style Guide の docstring 規約（モジュール、クラス、関数の説明、
+必要に応じて `Args:` / `Returns:` / `Raises:`）に従います。
 
 - https://google.github.io/styleguide/pyguide.html
