@@ -48,7 +48,7 @@ _STATE_PATH = pathlib.Path(
 
 def _parse_args() -> argparse.Namespace:
     """Parse the configuration and dry-run command-line options.
-    
+
     Returns:
       Namespace containing the config path and dry-run flag.
     """
@@ -71,7 +71,7 @@ def _parse_args() -> argparse.Namespace:
 
 def _require_interactive_terminal() -> None:
     """Reject execution without interactive standard streams.
-    
+
     Raises:
       CleanupError: If stdin, stdout, or stderr is not a TTY.
     """
@@ -83,10 +83,10 @@ def _require_interactive_terminal() -> None:
 
 def _require_commands(*commands: str) -> None:
     """Check that all required executables are available on PATH.
-    
+
     Args:
       *commands: Executable names required by the application.
-    
+
     Raises:
       CleanupError: If any executable is unavailable.
     """
@@ -97,7 +97,7 @@ def _require_commands(*commands: str) -> None:
 
 def _load_colors() -> Colors:
     """Load terminal formatting sequences, falling back to plain text.
-    
+
     Returns:
       Color escape sequences, or empty sequences when unsupported.
     """
@@ -106,10 +106,10 @@ def _load_colors() -> Colors:
 
     def tput(*args: str) -> str:
         """Resolve a terminal capability without failing if tput is unavailable.
-        
+
         Args:
           *args: Capability name and any required tput arguments.
-        
+
         Returns:
           The terminal control sequence, or an empty string on failure.
         """
@@ -131,15 +131,15 @@ def _load_colors() -> Colors:
 
 def _load_config(path: pathlib.Path) -> Config:
     """Load the repository search root from a TOML configuration file.
-    
+
     If the file is missing, the current working directory is used.
-    
+
     Args:
       path: Location of the TOML configuration file.
-    
+
     Returns:
       Configuration containing an existing repository search directory.
-    
+
     Raises:
       CleanupError: If a present file is invalid or its root is unusable.
     """
@@ -178,7 +178,7 @@ def _load_config(path: pathlib.Path) -> Config:
 
 def _load_state() -> AppState:
     """Read the most recently selected repository from local state.
-    
+
     Returns:
       Saved state, or an empty state when the file is absent or invalid.
     """
@@ -197,9 +197,9 @@ def _load_state() -> AppState:
 
 def _save_state(repository: pathlib.Path) -> None:
     """Persist the last selected repository with restricted permissions.
-    
+
     An I/O failure only produces a warning so cleanup can continue.
-    
+
     Args:
       repository: Repository path to remember.
     """
@@ -226,12 +226,12 @@ def _git_output(
     repository: pathlib.Path, *args: str, check: bool = True
 ) -> str:
     """Run Git in a repository and return its stripped output.
-    
+
     Args:
       repository: Directory used as Git's working tree.
       *args: Git subcommand and arguments.
       check: Whether to raise on a nonzero Git exit status.
-    
+
     Returns:
       Standard output stripped of surrounding whitespace.
     """
@@ -240,10 +240,10 @@ def _git_output(
 
 def _find_primary_worktree(candidate: pathlib.Path) -> pathlib.Path | None:
     """Find the primary worktree for a repository candidate.
-    
+
     Args:
       candidate: Path from which to inspect Git worktrees.
-    
+
     Returns:
       Resolved primary worktree path, or None if Git inspection fails.
     """
@@ -260,10 +260,10 @@ def _find_primary_worktree(candidate: pathlib.Path) -> pathlib.Path | None:
 
 def _repository_from_candidate(candidate: pathlib.Path) -> Repository | None:
     """Identify the primary Git repository represented by a directory.
-    
+
     Args:
       candidate: Directory to inspect, including linked worktrees.
-    
+
     Returns:
       Repository metadata, or None if it is not a Git working tree.
     """
@@ -301,13 +301,13 @@ def _repository_from_candidate(candidate: pathlib.Path) -> Repository | None:
 
 def _find_repositories(root: pathlib.Path) -> list[Repository]:
     """Discover unique Git repositories in a root and its direct children.
-    
+
     Args:
       root: Root directory to inspect, without recursive traversal.
-    
+
     Returns:
       Repository metadata in discovery order.
-    
+
     Raises:
       CleanupError: If the root directory cannot be scanned.
     """
@@ -339,16 +339,16 @@ def _select_with_fzf(
     with_nth: str,
 ) -> str:
     """Present a single-choice interactive fzf selection.
-    
+
     Args:
       rows: Tab-separated rows passed to the selector.
       prompt: Prompt text displayed by fzf.
       header: Header describing the displayed columns.
       with_nth: Columns fzf should display.
-    
+
     Returns:
       The complete selected row.
-    
+
     Raises:
       SelectionCancelled: If fzf exits without a selection.
     """
@@ -380,14 +380,14 @@ def _select_repository(
     repositories: list[Repository], state: AppState
 ) -> Repository:
     """Select a repository, prioritizing the previously used one.
-    
+
     Args:
       repositories: Repository candidates; reordered in place if remembered.
       state: Previously saved repository selection.
-    
+
     Returns:
       Repository corresponding to the selected fzf row.
-    
+
     Raises:
       CleanupError: If selection is invalid or there are no candidates.
       SelectionCancelled: If the user cancels fzf.
@@ -420,13 +420,13 @@ def _select_repository(
 
 def _load_worktrees(repository: pathlib.Path) -> list[Worktree]:
     """Parse registered Git worktrees, including stale and locked entries.
-    
+
     Args:
       repository: Primary repository path.
-    
+
     Returns:
       Worktrees in Git order, with the primary worktree first.
-    
+
     Raises:
       CleanupError: If no primary worktree can be determined.
     """
@@ -479,11 +479,11 @@ def _detect_local_default_branch(
     repository: pathlib.Path, primary_branch: str | None
 ) -> str | None:
     """Find the local default branch for candidate selection.
-    
+
     Args:
       repository: Primary repository path.
       primary_branch: Branch checked out in the primary worktree.
-    
+
     Returns:
       Origin's symbolic default, main or master, or the primary branch.
     """
@@ -520,11 +520,11 @@ def _detect_local_default_branch(
 
 def _branch_exists(repository: pathlib.Path, branch: str) -> bool:
     """Check whether a local branch ref exists.
-    
+
     Args:
       repository: Git repository to inspect.
       branch: Exact local branch name.
-    
+
     Returns:
       Whether the branch reference exists.
     """
@@ -545,11 +545,11 @@ def _branch_exists(repository: pathlib.Path, branch: str) -> bool:
 
 def _branch_sha(repository: pathlib.Path, branch: str) -> str:
     """Resolve the commit currently referenced by a local branch.
-    
+
     Args:
       repository: Git repository to inspect.
       branch: Exact local branch name.
-    
+
     Returns:
       Full commit object ID of the branch tip.
     """
@@ -563,12 +563,12 @@ def _branch_sha(repository: pathlib.Path, branch: str) -> str:
 
 def _is_ancestor(repository: pathlib.Path, sha: str, ref: str) -> bool:
     """Check whether a commit is an ancestor of a Git ref.
-    
+
     Args:
       repository: Git repository to inspect.
       sha: Commit object ID to test.
       ref: Reference that should contain the commit.
-    
+
     Returns:
       Whether Git confirms that the commit is an ancestor.
     """
@@ -583,14 +583,14 @@ def _local_merge_hint(
     repository: pathlib.Path, sha: str, default_branch: str | None
 ) -> str:
     """Provide an advisory local merge indicator for a candidate.
-    
+
     This hint is never used in place of the final merge verification.
-    
+
     Args:
       repository: Git repository to inspect.
       sha: Candidate commit object ID.
       default_branch: Possible default branch name.
-    
+
     Returns:
       MERGED when locally confirmed, or CHECK otherwise.
     """
@@ -616,13 +616,13 @@ def _local_merge_hint(
 
 def _worktree_status(worktree: Worktree) -> WorktreeStatus:
     """Classify a worktree before allowing destructive operations.
-    
+
     Ignored files are reported separately from tracked and untracked
     changes because they require explicit preview and confirmation.
-    
+
     Args:
       worktree: Registered worktree to inspect.
-    
+
     Returns:
       Safety status representing the worktree's current filesystem state.
     """
@@ -672,14 +672,14 @@ def _build_targets(
     default_branch: str | None,
 ) -> list[CleanupTarget]:
     """Build branch and linked-worktree candidates for cleanup.
-    
+
     The primary worktree and known default branch are excluded.
-    
+
     Args:
       repository: Git repository to inspect.
       worktrees: Registered worktrees, primary first.
       default_branch: Locally detected default branch, if any.
-    
+
     Returns:
       Branch-only, worktree-only, or combined cleanup candidates.
     """
@@ -761,13 +761,13 @@ def _build_targets(
 
 def _select_cleanup_target(targets: list[CleanupTarget]) -> CleanupTarget:
     """Choose a cleanup target and validate its selected identity.
-    
+
     Args:
       targets: Candidate targets displayed by fzf.
-    
+
     Returns:
       The original candidate matching the selected row.
-    
+
     Raises:
       CleanupError: If fzf returns a malformed or unexpected row.
       SelectionCancelled: If the user cancels selection.
@@ -814,13 +814,13 @@ def _select_cleanup_target(targets: list[CleanupTarget]) -> CleanupTarget:
 
 def _refresh_remote_state(repository: pathlib.Path) -> tuple[str, str]:
     """Authenticate GitHub and refresh the remote default branch ref.
-    
+
     Args:
       repository: Repository for gh and git operations.
-    
+
     Returns:
       The GitHub default branch name and owner/repository slug.
-    
+
     Raises:
       CleanupError: If GitHub authentication or metadata lookup fails.
     """
@@ -882,14 +882,14 @@ def _load_github_context(
     repository: pathlib.Path, branch: str, sha: str
 ) -> GitHubContext | None:
     """Find a related pull request or issue for display only.
-    
+
     This metadata is informational and does not prove merge status.
-    
+
     Args:
       repository: Git repository containing the selected target.
       branch: Candidate branch name or detached marker.
       sha: Candidate commit object ID.
-    
+
     Returns:
       Matching GitHub context, or None when none can be resolved.
     """
@@ -968,16 +968,16 @@ def _find_exact_merged_pr_for_branch(
     repository: pathlib.Path, branch: str, sha: str, default_branch: str
 ) -> tuple[str, str] | None:
     """Find a merged pull request matching a branch and exact head SHA.
-    
+
     Args:
       repository: Git repository used by GitHub CLI.
       branch: Branch name recorded on the pull request.
       sha: Exact head commit that must match.
       default_branch: Destination branch required for the merge.
-    
+
     Returns:
       Pull request number and URL, or None if no exact match exists.
-    
+
     Raises:
       CleanupError: If GitHub merge information cannot be verified.
     """
@@ -1018,16 +1018,16 @@ def _find_exact_merged_pr_for_commit(
     repository: pathlib.Path, repo_slug: str, sha: str, default_branch: str
 ) -> tuple[str, str] | None:
     """Find an exact merged pull request associated with a commit.
-    
+
     Args:
       repository: Git repository used by GitHub CLI.
       repo_slug: GitHub owner/repository identifier.
       sha: Exact pull request head commit to match.
       default_branch: Destination branch required for the merge.
-    
+
     Returns:
       Pull request number and URL, or None if no exact match exists.
-    
+
     Raises:
       CleanupError: If GitHub merge information cannot be verified.
     """
@@ -1061,19 +1061,19 @@ def _verify_branch_merged(
     default_branch: str,
 ) -> MergeProof:
     """Prove that the branch tip is included in the default branch.
-    
+
     Git ancestry or a merged pull request with an exact matching SHA is
     required; a matching branch name alone is insufficient.
-    
+
     Args:
       repository: Git repository to verify.
       branch: Local branch name.
       sha: Branch tip commit to verify.
       default_branch: Authoritative destination branch.
-    
+
     Returns:
       Evidence describing the verified merge.
-    
+
     Raises:
       CleanupError: If a safe merge cannot be demonstrated.
     """
@@ -1098,16 +1098,16 @@ def _verify_commit_merged(
     default_branch: str,
 ) -> MergeProof:
     """Prove that a detached worktree commit was merged.
-    
+
     Args:
       repository: Git repository to verify.
       repo_slug: GitHub owner/repository identifier.
       sha: Worktree HEAD to verify.
       default_branch: Authoritative destination branch.
-    
+
     Returns:
       Evidence describing the verified merge.
-    
+
     Raises:
       CleanupError: If a safe merge cannot be demonstrated.
     """
@@ -1131,12 +1131,12 @@ def _current_target_state(
     worktrees: list[Worktree],
 ) -> CurrentTargetState:
     """Read the current branch and worktree state for a selected target.
-    
+
     Args:
       repository: Git repository to inspect.
       target: Original selected cleanup target.
       worktrees: Latest Git worktree registrations.
-    
+
     Returns:
       Live existence, SHA, identity, and cleanliness information.
     """
@@ -1181,13 +1181,13 @@ def _validate_selected_identity(
     state: CurrentTargetState,
 ) -> None:
     """Reject a target whose identity changed since selection.
-    
+
     Args:
       repository: Git repository to inspect.
       target: Original selected target and recorded SHA.
       worktrees: Latest registered worktrees.
       state: Current target state.
-    
+
     Raises:
       CleanupError: If the branch or worktree no longer matches.
     """
@@ -1227,14 +1227,14 @@ def _protect_primary_and_default(
     default_branch: str,
 ) -> None:
     """Reject deletion of protected branches and working directories.
-    
+
     Args:
       repository: Git repository to inspect.
       target: Selected cleanup target.
       worktrees: Latest registered worktrees, primary first.
       state: Current target state.
       default_branch: GitHub's authoritative default branch.
-    
+
     Raises:
       CleanupError: If the target is the default or primary branch,
         primary worktree, or current working directory.
@@ -1259,10 +1259,10 @@ def _protect_primary_and_default(
 
 def _validate_worktree_status(state: CurrentTargetState) -> None:
     """Require a clean worktree or one containing only ignored files.
-    
+
     Args:
       state: Current state of the selected target.
-    
+
     Raises:
       CleanupError: If the worktree is dirty, locked, stale, or unknown.
     """
@@ -1288,10 +1288,10 @@ def _validate_worktree_status(state: CurrentTargetState) -> None:
 
 def _show_ignored_cleanup_preview(path: pathlib.Path) -> None:
     """Preview ignored paths that git clean would delete.
-    
+
     Args:
       path: Worktree directory whose ignored files are listed.
-    
+
     Raises:
       CleanupError: If Git cannot produce a cleanup preview.
     """
@@ -1320,7 +1320,7 @@ def _show_cleanup_plan(
     colors: Colors,
 ) -> None:
     """Display exact cleanup actions and the supporting merge evidence.
-    
+
     Args:
       repository: Git repository containing the target.
       target: Selected cleanup candidate.
@@ -1407,13 +1407,13 @@ def _show_cleanup_plan(
 
 def _confirm(message: str) -> bool:
     """Ask for confirmation, accepting Enter as the default yes.
-    
+
     Only Enter, y, and Y approve the action. Any other response,
     including end-of-file, cancels the operation.
-    
+
     Args:
       message: Destructive action to confirm.
-    
+
     Returns:
       True if the user explicitly confirms or presses Enter.
     """
@@ -1432,17 +1432,17 @@ def _verify_merge(
     repo_slug: str,
 ) -> MergeProof:
     """Verify the branch or worktree commit has been merged.
-    
+
     Args:
       repository: Git repository to inspect.
       target: Selected cleanup target.
       state: Current target state.
       default_branch: Authoritative GitHub default branch.
       repo_slug: GitHub owner/repository identifier.
-    
+
     Returns:
       Verified Git ancestry or exact merged pull request evidence.
-    
+
     Raises:
       CleanupError: If the target cannot be verified as merged.
     """
@@ -1471,14 +1471,14 @@ def _final_race_condition_checks(
     repo_slug: str,
 ) -> None:
     """Revalidate selected state immediately before deleting anything.
-    
+
     Args:
       repository: Git repository containing the target.
       target: Originally selected target and its SHA.
       previous: State recorded when the plan was displayed.
       default_branch: Authoritative GitHub default branch.
       repo_slug: GitHub owner/repository identifier.
-    
+
     Raises:
       CleanupError: If the target has changed or merge proof is invalid.
     """
@@ -1518,7 +1518,7 @@ def _final_race_condition_checks(
 
 def _remove_ignored_files(path: pathlib.Path) -> None:
     """Delete only ignored files from a verified worktree.
-    
+
     Args:
       path: Worktree path already previewed and confirmed.
     """
@@ -1528,7 +1528,7 @@ def _remove_ignored_files(path: pathlib.Path) -> None:
 
 def _remove_worktree(repository: pathlib.Path, path: pathlib.Path) -> None:
     """Remove a verified worktree without the Git force option.
-    
+
     Args:
       repository: Primary repository containing the worktree.
       path: Linked worktree path to remove.
@@ -1543,15 +1543,15 @@ def _remove_branch(
     expected_sha: str,
 ) -> None:
     """Delete a branch safely, checking the expected commit SHA.
-    
+
     First attempts git branch -d. If that fails, uses a compare-and-delete
     Git ref operation only after reconfirming identity and worktree safety.
-    
+
     Args:
       repository: Git repository containing the local branch.
       branch: Exact local branch name.
       expected_sha: Previously verified branch tip commit.
-    
+
     Raises:
       CleanupError: If the branch is in use or changed since verification.
     """
@@ -1595,16 +1595,16 @@ def _cleanup_target(
     colors: Colors,
 ) -> None:
     """Verify, preview, confirm, and clean one selected target.
-    
+
     The dry-run path never confirms or deletes. Destructive work starts
     only after user confirmation and final race-condition checks.
-    
+
     Args:
       repository: Primary Git repository path.
       target: Previously selected cleanup target.
       dry_run: Whether to show the plan without deleting anything.
       colors: Terminal formatting sequences.
-    
+
     Raises:
       CleanupError: If any safety condition fails.
     """
@@ -1691,12 +1691,12 @@ def _run_repository_loop(
     repository: Repository, *, dry_run: bool, colors: Colors
 ) -> None:
     """Repeatedly select and clean targets from a repository.
-    
+
     Args:
       repository: Selected primary Git repository metadata.
       dry_run: Whether to prevent all deletion operations.
       colors: Terminal formatting sequences.
-    
+
     Raises:
       CleanupError: If the primary worktree identity is invalid.
     """
@@ -1742,7 +1742,7 @@ def _run_repository_loop(
 
 def main() -> int:
     """Run the interactive worktree cleanup command-line tool.
-    
+
     Returns:
       Exit status: zero on normal completion, one on safety errors,
       or 130 when interrupted.
