@@ -15,11 +15,11 @@ from typing import Sequence
 
 
 class CleanupError(RuntimeError):
-    """Raised when cleanup cannot be completed safely."""
+    """A safety failure that prevents a cleanup operation."""
 
 
 class SelectionCancelled(Exception):
-    """Raised when the user cancels an fzf selection."""
+    """An intentionally cancelled fzf selection."""
 
 
 class TargetType(enum.StrEnum):
@@ -42,7 +42,7 @@ class WorktreeStatus(enum.StrEnum):
 @dataclasses.dataclass(frozen=True)
 class Config:
     """Validated application configuration.
-    
+
     Attributes:
       root_directory: Root and immediate child directories to search.
     """
@@ -52,7 +52,7 @@ class Config:
 @dataclasses.dataclass(frozen=True)
 class AppState:
     """Persisted interactive selection state.
-    
+
     Attributes:
       last_repository: The most recently selected repository, if known.
     """
@@ -62,7 +62,7 @@ class AppState:
 @dataclasses.dataclass(frozen=True)
 class Repository:
     """Display information for a primary Git repository.
-    
+
     Attributes:
       name: Repository directory name.
       branch: Branch checked out by the primary worktree.
@@ -78,7 +78,7 @@ class Repository:
 @dataclasses.dataclass(frozen=True)
 class Worktree:
     """A registered Git worktree and its metadata.
-    
+
     Attributes:
       path: Resolved filesystem location of the worktree.
       head: Checked-out commit object ID.
@@ -96,7 +96,7 @@ class Worktree:
 @dataclasses.dataclass(frozen=True)
 class CleanupTarget:
     """A candidate selected for safe branch or worktree deletion.
-    
+
     Attributes:
       target_type: Which resources should be removed.
       branch_display: Branch label displayed to the user.
@@ -138,7 +138,7 @@ class CleanupTarget:
 @dataclasses.dataclass(frozen=True)
 class GitHubContext:
     """A related GitHub item shown as informational context.
-    
+
     Attributes:
       context_type: PR or Issue.
       number: GitHub item number.
@@ -156,7 +156,7 @@ class GitHubContext:
 @dataclasses.dataclass(frozen=True)
 class MergeProof:
     """Evidence that the selected commit has already been merged.
-    
+
     Attributes:
       proof_type: Git ancestry or an exact GitHub pull request match.
       pr_number: Verified pull request number, if applicable.
@@ -170,7 +170,7 @@ class MergeProof:
 @dataclasses.dataclass(frozen=True)
 class CurrentTargetState:
     """Live branch and worktree state checked before cleanup.
-    
+
     Attributes:
       branch_exists: Whether the selected branch still exists.
       branch_sha: Current branch commit, if present.
@@ -190,7 +190,7 @@ class CurrentTargetState:
 @dataclasses.dataclass(frozen=True)
 class Colors:
     """Terminal control sequences used for informational output.
-    
+
     Attributes:
       reset: Reset terminal formatting.
       bold: Emphasize text.
@@ -210,7 +210,7 @@ class Colors:
 
 
 class CommandRunner:
-    """Runs external commands without invoking a shell."""
+    """An executor for external commands that never invokes a shell."""
 
     def run(
         self,
@@ -222,17 +222,17 @@ class CommandRunner:
         input_text: str | None = None,
     ) -> subprocess.CompletedProcess[str]:
         """Run an external command without involving a shell.
-        
+
         Args:
           args: Command and arguments, each supplied as a separate element.
           cwd: Optional working directory for the command.
           check: Whether to raise if the command exits unsuccessfully.
           capture_output: Whether to capture stdout and stderr.
           input_text: Optional text sent to the command's standard input.
-        
+
         Returns:
           The completed process, including its exit status and output.
-        
+
         Raises:
           subprocess.CalledProcessError: If check is true and the command fails.
         """
@@ -254,15 +254,15 @@ class CommandRunner:
         check: bool = True,
     ) -> str:
         """Run a command and return its stripped standard output.
-        
+
         Args:
           args: Command and arguments, each supplied as a separate element.
           cwd: Optional working directory for the command.
           check: Whether to raise if the command exits unsuccessfully.
-        
+
         Returns:
           The command's standard output with surrounding whitespace removed.
-        
+
         Raises:
           subprocess.CalledProcessError: If check is true and the command fails.
         """
