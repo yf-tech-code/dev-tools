@@ -33,9 +33,10 @@ cleanup_worktree/
 2. fzfで対象リポジトリを選択する
 3. 前回選択したリポジトリを次回の候補一覧の先頭に表示する
 4. fzfで削除対象のbranch / worktreeを選択する
-5. GitHubとローカルGitの状態を使ってマージ済みであることを確認する
-6. 削除内容を表示し、`[Y/n]` で確認後に削除する（Enter のみでも承認）
-7. 削除完了後は終了せず、候補一覧を再取得して削除対象の選択画面に戻る
+5. GitHubとローカルGitでマージ状態を確認。未マージの場合は、
+   クローズ済みPRとリモートブランチ削除を追加で検証する
+6. PRタイトル・PR状態・URLと削除計画を表示し、`[Y/n]` で確認する
+7. 削除完了後も削除エラー後もブランチ選択画面に戻る
 8. fzfをキャンセルするとツールを終了する
 
 ## 設定
@@ -112,12 +113,20 @@ python3 manual/git/cleanup_worktree/cleanup_worktree.py --dry-run
 - primary worktree
 - default branch / primary branch
 - 現在の作業ディレクトリ自身に相当するworktree
-- マージ済みであることを安全に確認できないbranch / commit
+- マージ済みでなく、クローズ済みPR・同一HEAD・リモート削除を確認できないbranch
+- 未マージでoriginに存在するbranch（リモート情報が取得できない場合も含む）
+- マージも上記の未マージ削除条件も確認できないcommit
 
 ignored filesのみが残っているworktreeは、削除対象を事前表示し、
 確認後に `git clean -fdX` でignored filesだけを削除します。
 
-削除確認プロンプトは `[Y/n]` です。**Enter または `y` / `Y` で削除を承認**し、
+未マージブランチの削除は、PRがCLOSEDであり、同一リポジトリのPR HEADと
+ローカルHEADが一致し、origin上からブランチが削除された場合のみ許可します。
+実際のリモートを `git ls-remote --exit-code` で確認し、
+通信エラーやPR不明の場合は削除しません。
+削除前にPRのタイトル・状態・URL、未マージ消失の警告を表示します。
+
+削除確認プロンプトはマージ済み・未マージともに `[Y/n]` です。**Enter または `y` / `Y` で削除を承認**し、
 `n` / `N` やその他の入力、入力終了（EOF）でキャンセルします。
 **ignored files に `.env` などが含まれる場合も Enter で承認される**ため、
 表示された削除内容を確認してから Enter を押してください。
