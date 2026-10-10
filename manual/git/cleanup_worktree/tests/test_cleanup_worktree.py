@@ -7,8 +7,10 @@ from __future__ import annotations
 
 import ast
 import contextlib
+import dataclasses
 import io
 import pathlib
+import subprocess
 import sys
 import unittest
 from unittest import mock
@@ -132,6 +134,157 @@ class CleanupFlowTest(unittest.TestCase):
         user_input.assert_not_called()
         final_checks.assert_not_called()
         remove_branch.assert_not_called()
+
+
+
+class UnmergedBranchTest(unittest.TestCase):
+    """Verify closed PR and remote deletion requirements."""
+
+    def setUp(self):
+        """Build an unmerged test branch without external commands."""
+        self.repository = pathlib.Path("/virtual/repository")
+        self.target = cleanup_worktree.CleanupTarget(
+            cleanup_worktree.TargetType.BRANCH_ONLY,
+            "feature/unused", None, "CHECK", None, "abc123",
+        )
+        self.state = cleanup_worktree.CurrentTargetState(
+            True, "abc123", False, None, None, None,
+        )
+        self.context = cleanup_worktree.GitHubContext(
+            "PR", "123", "Unused feature", "CLOSED",
+            "https://github.com/owner/repo/pull/123",
+            head_sha="abc123", is_cross_repository=False,
+        )
+
+    def _verify(self, context):
+        """Check an unmerged branch with the supplied GitHub context.
+
+        Args:
+          context: Associated PR metadata.
+
+        Returns:
+          Verified cleanup eligibility evidence.
+        """
+        return cleanup_worktree._verify_cleanup_proof(
+            self.repository, self.target, self.state,
+            "main", "owner/repo", context,
+        )
+
+    def test_deleted_remote_closed_pr_is_eligible(self):
+        with mock.patch.object(
+            cleanup_worktree, "_verify_merge",
+            side_effect=cleanup_worktree.UnmergedTargetError("unmerged")
+        ), mock.patch.object(
+            cleanup_worktree, "_remote_branch_is_deleted", return_value=True
+        ):
+            self.assertEqual(
+                self._verify(self.context).proof_type, "unmerged-closed-pr"
+            )
+
+    def test_existing_remote_is_not_eligible(self):
+        with mock.patch.object(
+            cleanup_worktree, "_verify_merge",
+            side_effect=cleanup_worktree.UnmergedTargetError("unmerged")
+        ), mock.patch.object(
+            cleanup_worktree, "_remote_branch_is_deleted", return_value=False
+        ), self.assertRaises(cleanup_worktree.CleanupError):
+            self._verify(self.context)
+
+    def test_open_pr_is_not_eligible(self):
+        with mock.patch.object(
+            cleanup_worktree, "_verify_merge",
+            side_effect=cleanup_worktree.UnmergedTargetError("unmerged")
+        ), self.assertRaises(cleanup_worktree.CleanupError):
+            self._verify(dataclasses.replace(self.context, state="OPEN"))
+
+    def test_mismatched_pr_head_is_not_eligible(self):
+        with mock.patch.object(
+            cleanup_worktree, "_verify_merge",
+            side_effect=cleanup_worktree.UnmergedTargetError("unmerged")
+        ), self.assertRaises(cleanup_worktree.CleanupError):
+            self._verify(dataclasses.replace(
+                self.context, head_sha="different"
+            ))
+
+    def test_fork_pr_is_not_eligible(self):
+        with mock.patch.object(
+            cleanup_worktree, "_verify_merge",
+            side_effect=cleanup_worktree.UnmergedTargetError("unmerged")
+        ), self.assertRaises(cleanup_worktree.CleanupError):
+            self._verify(dataclasses.replace(
+                self.context, is_cross_repository=True
+            ))
+
+    def test_remote_probe_distinguishes_missing_and_errors(self):
+        for code, missing in ((0, False), (2, True)):
+            with self.subTest(status=code), mock.patch.object(
+                cleanup_worktree._RUNNER, "run",
+                return_value=subprocess.CompletedProcess(
+                    [], code, stdout="", stderr=""
+                ),
+            ):
+                self.assertEqual(
+                    cleanup_worktree._remote_branch_is_deleted(
+                        self.repository, "feature/unused"
+                    ),
+                    missing,
+                )
+        with mock.patch.object(
+            cleanup_worktree._RUNNER, "run",
+            return_value=subprocess.CompletedProcess(
+                [], 128, stdout="", stderr="connection failed"
+            ),
+        ), self.assertRaises(cleanup_worktree.CleanupError):
+            cleanup_worktree._remote_branch_is_deleted(
+                self.repository, "feature/unused"
+            )
+
+
+class ErrorRecoveryTest(unittest.TestCase):
+    """Keep the target selection loop active after a Git command fails."""
+
+    def test_git_error_reopens_selection(self):
+        repository = cleanup_worktree.Repository(
+            "repo", "main", pathlib.Path("/virtual/repo"), "origin"
+        )
+        worktree = cleanup_worktree.Worktree(
+            repository.path, "abc", "main", False, False
+        )
+        target = cleanup_worktree.CleanupTarget(
+            cleanup_worktree.TargetType.BRANCH_ONLY,
+            "feature", None, "CHECK", None, "abc",
+        )
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(mock.patch.object(
+                cleanup_worktree, "_load_worktrees", return_value=[worktree]
+            ))
+            stack.enter_context(mock.patch.object(
+                cleanup_worktree, "_detect_local_default_branch",
+                return_value="main"
+            ))
+            stack.enter_context(mock.patch.object(
+                cleanup_worktree, "_build_targets", return_value=[target]
+            ))
+            select = stack.enter_context(mock.patch.object(
+                cleanup_worktree, "_select_cleanup_target",
+                side_effect=[target, cleanup_worktree.SelectionCancelled()]
+            ))
+            stack.enter_context(mock.patch.object(
+                cleanup_worktree, "_cleanup_target",
+                side_effect=subprocess.CalledProcessError(
+                    1, ["git", "worktree", "remove"], stderr="failed"
+                )
+            ))
+            with contextlib.redirect_stdout(
+                io.StringIO()
+            ), contextlib.redirect_stderr(io.StringIO()):
+                cleanup_worktree._run_repository_loop(
+                    repository, dry_run=False,
+                    colors=cleanup_worktree.Colors(
+                        "", "", "", "", "", "", ""
+                    ),
+                )
+        self.assertEqual(select.call_count, 2)
 
 
 class DocumentationTest(unittest.TestCase):
