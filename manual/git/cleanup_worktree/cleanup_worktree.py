@@ -31,6 +31,7 @@ from cleanup_worktree_support import (
     Repository,
     SelectionCancelled,
     TargetType,
+    UnmergedTargetError,
     Worktree,
     WorktreeStatus,
     _RUNNER,
@@ -908,7 +909,7 @@ def _load_github_context(
             "--limit",
             "100",
             "--json",
-            "number,title,state,url,mergedAt,headRefOid",
+            "number,title,state,url,mergedAt,headRefOid,isCrossRepository",
         ],
         cwd=repository,
         check=False,
@@ -931,6 +932,8 @@ def _load_github_context(
                     else str(pr.get("state", ""))
                 ),
                 url=str(pr.get("url", "")),
+                head_sha=pr.get("headRefOid"),
+                is_cross_repository=pr.get("isCrossRepository"),
             )
 
     match = re.search(r"(\d+)$", branch)
@@ -1085,7 +1088,7 @@ def _verify_branch_merged(
     )
     if merged_pr is not None:
         return MergeProof("github-pr", merged_pr[0], merged_pr[1])
-    raise CleanupError(
+    raise UnmergedTargetError(
         "selected branch has not been safely verified as merged into "
         f"{default_branch}"
     )
@@ -1380,7 +1383,12 @@ def _show_cleanup_plan(
     }.get(status, colors.reset)
     print(f"  Worktree state: {status_color}{status}{colors.reset}")
     print(f"  HEAD:           {state.branch_sha or state.worktree_head}")
-    if proof.proof_type == "github-pr":
+    if proof.proof_type == "unmerged-closed-pr":
+        print(f"  Merge proof:    NOT MERGED (closed PR #{proof.pr_number})")
+        print("  Remote branch:  deleted from origin (checked live)")
+        print(f"\n{colors.yellow}WARNING: Unmerged commits may be lost."
+              f"{colors.reset}")
+    elif proof.proof_type == "github-pr":
         print(f"  Merge proof:    PR #{proof.pr_number} -> {default_branch}")
         print(f"  PR URL:         {proof.pr_url}")
     else:
@@ -1463,12 +1471,104 @@ def _verify_merge(
     raise CleanupError("unable to determine selected target HEAD")
 
 
+
+def _remote_branch_is_deleted(
+    repository: pathlib.Path, branch: str
+) -> bool:
+    """Check the live origin for a branch rather than cached tracking refs.
+
+    Args:
+      repository: Git repository to inspect.
+      branch: Exact branch name to check.
+
+    Returns:
+      True if origin has no matching branch.
+
+    Raises:
+      CleanupError: If remote access cannot be verified.
+    """
+    result = _RUNNER.run(
+        [
+            "git", "-C", repository, "ls-remote", "--exit-code",
+            "--heads", "origin", f"refs/heads/{branch}",
+        ],
+        check=False,
+    )
+    if result.returncode == 0:
+        return False
+    if result.returncode == 2 and not result.stdout.strip():
+        return True
+    detail = result.stderr.strip() or f"exit code {result.returncode}"
+    raise CleanupError(f"unable to verify remote branch deletion: {detail}")
+
+
+def _verify_cleanup_proof(
+    repository: pathlib.Path,
+    target: CleanupTarget,
+    state: CurrentTargetState,
+    default_branch: str,
+    repo_slug: str,
+    context: GitHubContext | None,
+) -> MergeProof:
+    """Authorize either verified merged cleanup or discarded closed-PR work.
+
+    Unmerged cleanup requires a closed PR from the same repository with the
+    same head SHA and an absent remote branch.
+
+    Args:
+      repository: Primary Git repository.
+      target: Original cleanup selection.
+      state: Current branch and worktree state.
+      default_branch: Authoritative GitHub default branch.
+      repo_slug: GitHub repository identifier.
+      context: Selected GitHub PR or issue context.
+
+    Returns:
+      Evidence of a merge or safe unmerged-discard eligibility.
+
+    Raises:
+      CleanupError: If the candidate is not eligible.
+    """
+    try:
+        return _verify_merge(
+            repository, target, state, default_branch, repo_slug
+        )
+    except UnmergedTargetError:
+        pass
+
+    if (
+        not state.branch_exists
+        or not target.has_branch
+        or not target.branch
+        or context is None
+        or context.context_type != "PR"
+        or context.state != "CLOSED"
+    ):
+        raise CleanupError(
+            "unmerged cleanup requires a closed, unmerged GitHub PR"
+        )
+    if context.is_cross_repository is not False:
+        raise CleanupError(
+            "unmerged cleanup requires a PR from the origin repository"
+        )
+    if context.head_sha != state.branch_sha:
+        raise CleanupError(
+            "local branch HEAD does not match the closed PR HEAD"
+        )
+    if not _remote_branch_is_deleted(repository, target.branch):
+        raise CleanupError(
+            "unmerged cleanup requires the remote branch to be deleted"
+        )
+    return MergeProof("unmerged-closed-pr", context.number, context.url)
+
+
 def _final_race_condition_checks(
     repository: pathlib.Path,
     target: CleanupTarget,
     previous: CurrentTargetState,
     default_branch: str,
     repo_slug: str,
+    proof: MergeProof,
 ) -> None:
     """Revalidate selected state immediately before deleting anything.
 
@@ -1478,9 +1578,10 @@ def _final_race_condition_checks(
       previous: State recorded when the plan was displayed.
       default_branch: Authoritative GitHub default branch.
       repo_slug: GitHub owner/repository identifier.
+      proof: Evidence shown before deletion confirmation.
 
     Raises:
-      CleanupError: If the target has changed or merge proof is invalid.
+      CleanupError: If the target or deletion proof has changed.
     """
     worktrees = _load_worktrees(repository)
     latest = _current_target_state(repository, target, worktrees)
@@ -1513,7 +1614,27 @@ def _final_race_condition_checks(
                 "branch changed before deletion; cleanup aborted"
             )
 
-    _verify_merge(repository, target, latest, default_branch, repo_slug)
+    _validate_selected_identity(repository, target, worktrees, latest)
+    _protect_primary_and_default(
+        repository, target, worktrees, latest, default_branch
+    )
+    _validate_worktree_status(latest)
+    if proof.proof_type == "unmerged-closed-pr":
+        context = _load_github_context(
+            repository, target.branch_display, target.head
+        )
+        latest_proof = _verify_cleanup_proof(
+            repository, target, latest, default_branch, repo_slug, context
+        )
+        if (
+            latest_proof.proof_type != "unmerged-closed-pr"
+            or latest_proof.pr_number != proof.pr_number
+        ):
+            raise CleanupError(
+                "unmerged cleanup eligibility changed before deletion"
+            )
+    else:
+        _verify_merge(repository, target, latest, default_branch, repo_slug)
 
 
 def _remove_ignored_files(path: pathlib.Path) -> None:
@@ -1628,8 +1749,8 @@ def _cleanup_target(
         repository, target, worktrees, state, default_branch
     )
     _validate_worktree_status(state)
-    proof = _verify_merge(
-        repository, target, state, default_branch, repo_slug
+    proof = _verify_cleanup_proof(
+        repository, target, state, default_branch, repo_slug, context
     )
     _show_cleanup_plan(
         repository,
@@ -1655,7 +1776,7 @@ def _cleanup_target(
         return
 
     _final_race_condition_checks(
-        repository, target, state, default_branch, repo_slug
+        repository, target, state, default_branch, repo_slug, proof
     )
 
     if state.worktree_exists and target.path:
@@ -1735,8 +1856,15 @@ def _run_repository_loop(
                 dry_run=dry_run,
                 colors=colors,
             )
-        except CleanupError as exc:
-            print(f"\nERROR: {exc}", file=sys.stderr)
+        except (CleanupError, subprocess.CalledProcessError, OSError) as exc:
+            detail = (
+                exc.stderr.strip()
+                if isinstance(exc, subprocess.CalledProcessError)
+                and isinstance(exc.stderr, str)
+                and exc.stderr.strip()
+                else str(exc)
+            )
+            print(f"\nERROR: {detail}", file=sys.stderr)
             print("Returning to cleanup target selection.")
 
 
