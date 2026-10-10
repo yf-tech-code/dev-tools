@@ -18,6 +18,10 @@ class CleanupError(RuntimeError):
     """A safety failure that prevents a cleanup operation."""
 
 
+class UnmergedTargetError(CleanupError):
+    """A branch whose tip cannot be verified as merged."""
+
+
 class SelectionCancelled(Exception):
     """An intentionally cancelled fzf selection."""
 
@@ -145,12 +149,16 @@ class GitHubContext:
       title: Display title.
       state: GitHub item state.
       url: Link to the item.
+      head_sha: PR head commit ID, when available.
+      is_cross_repository: Whether the PR comes from a fork.
     """
     context_type: str
     number: str
     title: str
     state: str
     url: str
+    head_sha: str | None = None
+    is_cross_repository: bool | None = None
 
 
 @dataclasses.dataclass(frozen=True)
